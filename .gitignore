@@ -1,0 +1,23 @@
+# STM32CubeIDE & STM32CubeMX
+**/.settings/
+**/Debug/
+**/Release/
+**/build/
+**/MX_*/    # CubeMX-generated folders
+**/mx_*/
+
+
+# Atollic TrueSTUDIO
+**/.metadata/
+**/.project
+**/.cproject
+**/.loadpath
+**/.externalToolBuilders/
+*.launch
+
+# CMake build
+**/build/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/Makefile

@@ -1,0 +1,172 @@
+En fura esta en el pin PB10, Tim2 Chanel 3
+
+En STM2CubeIDE con un STM32F411 de una blackpill, como puedo conectar un receptor de IR (infrarrojo)
+
+
+
+Ver razonamiento
+Claro, conectar un receptor de infrarrojos (IR) a tu STM32F411 Black Pill es un proyecto excelente para aprender a usar los temporizadores (timers) en modo de captura de entrada (Input Capture).
+
+Aquí tienes una guía paso a paso, desde el hardware hasta el código en STM32CubeIDE. Usaremos el protocolo NEC, que es el más común en mandos a distancia.
+
+1. Hardware Necesario
+Placa STM32F411 Black Pill.
+
+Receptor IR: Un modelo común como el VS1838B o la serie TSOP (ej. TSOP38238). Estos tienen 3 pines: VCC, GND y Señal (OUT).
+
+Cables de conexión (Jumpers).
+
+Conexión
+La conexión es muy sencilla. El pin de señal del receptor debe ir a un pin del STM32 que tenga capacidad de Input Capture asociada a un temporizador. Una excelente opción en la Black Pill es el pin PA0, que está conectado al canal 1 del temporizador TIM2 (TIM2_CH1).
+
+GND del receptor -> G en la Black Pill
+
+VCC del receptor -> 3V3 en la Black Pill
+
+Señal (OUT) del receptor -> PA0 en la Black Pill
+
+2. Configuración en STM32CubeIDE
+Ahora, vamos a configurar el proyecto en CubeIDE.
+
+Paso 1: Configurar el Temporizador (TIM2)
+Abre tu proyecto .ioc en CubeIDE.
+
+En la vista del chip, haz clic en el pin PA0. En el menú desplegable, selecciónalo como TIM2_CH1.
+
+Ve a Pinout & Configuration -> Categories -> Timers y selecciona TIM2.
+
+En la configuración de TIM2 Mode and Configuration, ajusta lo siguiente:
+
+Clock Source: Internal Clock.
+
+Channel 1: Input Capture direct mode.
+
+En la sección Parameter Settings:
+
+Prescaler (PSC): Ponlo en 99. Si tu microcontrolador corre a 100MHz (la velocidad por defecto de la Black Pill), esto hará que el contador del timer se incremente cada 1 microsegundo (100MHz / (99+1) = 1MHz). Esto es perfecto para medir las duraciones de los pulsos IR.
+
+Counter Period (ARR): Déjalo al máximo (65535 para un timer de 16 bits, o 0xFFFFFFFF-1 para uno de 32 bits como TIM2).
+
+Input Capture filter (IC1 Filter): Un valor de 4 puede ayudar a reducir el ruido.
+
+IC1 Polarity: Cámbialo a Both Edges. Esto es crucial para medir tanto la duración de los pulsos altos como los bajos.
+
+Paso 2: Habilitar las Interrupciones
+Dentro de la configuración de TIM2, ve a la pestaña NVIC Settings.
+
+Marca la casilla TIM2 global interrupt para habilitar la interrupción.
+
+Paso 3: Generar el Código
+Guarda el fichero .ioc. CubeIDE te preguntará si quieres generar el código. Haz clic en Yes.
+
+3. El Código en main.c
+Ahora vamos a añadir la lógica para capturar y decodificar la señal. Navega hasta el fichero main.c en el explorador de proyectos.
+
+Paso 1: Añadir Variables Globales
+En la sección de /* USER CODE BEGIN PV */, añade estas variables. Las usaremos para almacenar los datos capturados.
+
+C
+
+/* USER CODE BEGIN PV */
+#define NEC_BIT_COUNT 32
+volatile uint32_t captured_edges[NEC_BIT_COUNT * 2] = {0}; // Almacena los tiempos de cada flanco
+volatile uint8_t edge_count = 0; // Contador de flancos
+volatile uint8_t ir_data_ready = 0; // Flag para indicar que se recibió una trama completa
+
+uint32_t decoded_data = 0; // Aquí guardaremos el código decodificado
+/* USER CODE END PV */
+Paso 2: Iniciar la Captura
+En la función main(), dentro de la sección /* USER CODE BEGIN 2 */, añade la línea que inicia el temporizador en modo interrupción.
+
+C
+
+/* USER CODE BEGIN 2 */
+HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
+/* USER CODE END 2 */
+Paso 3: Implementar la Rutina de Interrupción (Callback)
+Esta es la parte más importante. Cuando el pin PA0 detecta un cambio (un flanco), se llama a esta función. Aquí medimos el tiempo entre flancos. Añade este código en la sección /* USER CODE BEGIN 4 */.
+
+C
+
+/* USER CODE BEGIN 4 */
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
+  if (htim->Instance == TIM2 && htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1)
+  {
+    if (edge_count == 0) // Si es el primer flanco, reinicia el contador
+    {
+      __HAL_TIM_SET_COUNTER(htim, 0);
+      captured_edges[edge_count++] = 0;
+    }
+    else
+    {
+      captured_edges[edge_count++] = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+    }
+
+    if (edge_count >= (NEC_BIT_COUNT * 2)) // Si ya capturamos todos los bits
+    {
+      ir_data_ready = 1;
+      edge_count = 0;
+      HAL_TIM_IC_Stop_IT(&htim2, TIM_CHANNEL_1); // Detenemos para procesar
+    }
+  }
+}
+/* USER CODE END 4 */
+Paso 4: Decodificar los Datos en el Bucle Principal
+Finalmente, en el bucle while(1) de main(), comprobaremos si se ha recibido una trama completa y, de ser así, la decodificaremos.
+
+C
+
+/* USER CODE BEGIN WHILE */
+while (1)
+{
+    if (ir_data_ready)
+    {
+        decoded_data = 0;
+        // La decodificación NEC se basa en la duración de los pulsos bajos
+        // Un '0' es un pulso bajo de ~560µs
+        // Un '1' es un pulso bajo de ~1690µs
+
+        // Saltamos el pulso de start (índice 0 y 1), empezamos en el 2
+        for (uint8_t i = 2; i < (NEC_BIT_COUNT * 2); i += 2)
+        {
+            uint32_t pulse_low_duration = captured_edges[i+1] - captured_edges[i];
+
+            if (pulse_low_duration > 1000) // Si dura más de 1000µs, es un '1'
+            {
+                decoded_data |= (1UL << (31 - ((i/2)-1) ));
+            }
+            // Si es más corto, es un '0', no hacemos nada (el bit ya es 0)
+        }
+
+        // Extraer la dirección y el comando (en el protocolo NEC)
+        uint8_t address = (decoded_data >> 24) & 0xFF;
+        uint8_t command = (decoded_data >> 8) & 0xFF;
+
+        // Imprime por SWV o UART para depurar
+        printf("Datos recibidos: 0x%08lX -> Comando: 0x%02X\n", decoded_data, command);
+
+        // Limpiamos y reiniciamos para la siguiente captura
+        ir_data_ready = 0;
+        edge_count = 0;
+        for(int i=0; i<(NEC_BIT_COUNT * 2); i++) captured_edges[i] = 0;
+        HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
+    }
+  /* USER CODE END WHILE */
+  /* USER CODE BEGIN 3 */
+}
+/* USER CODE END 3 */
+Nota: Para que printf funcione, necesitas redirigirlo a un UART o al SWV (Serial Wire Viewer).
+
+Resumen del Funcionamiento
+El receptor IR invierte la señal del mando. Cuando el mando envía un pulso, la salida del receptor es baja.
+
+Configuramos el TIM2 para que capture el tiempo en cada cambio de flanco (alto a bajo y bajo a alto) en el pin PA0.
+
+La interrupción HAL_TIM_IC_CaptureCallback se dispara en cada flanco, guardando el instante de tiempo en el array captured_edges.
+
+Una vez que tenemos los 64 flancos (32 bits), el flag ir_data_ready se activa.
+
+En el bucle main, decodificamos los datos analizando la duración de los tiempos en bajo. Según el protocolo NEC, un pulso bajo corto es un '0' y uno largo es un '1'.
+
+Finalmente, procesamos el dato de 32 bits para obtener la dirección y el comando enviados por el mando a distancia.
